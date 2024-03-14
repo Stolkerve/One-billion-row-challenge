@@ -9,29 +9,9 @@ import (
 	"os"
 	"runtime/pprof"
 	"sort"
-	"strconv"
 	"time"
 	"unsafe"
 )
-
-/*
-https://stackoverflow.com/questions/7021725/how-to-convert-a-string-to-integer-in-c
-int atoi(const char* str){
-    int num = 0;
-    int i = 0;
-    bool isNegetive = false;
-    if(str[i] == '-'){
-        isNegetive = true;
-        i++;
-    }
-    while (str[i] && (str[i] >= '0' && str[i] <= '9')){
-        num = num * 10 + (str[i] - '0');
-        i++;
-    }
-    if(isNegetive) num = -1 * num;
-    return num;
-}
-*/
 
 const FileBufferSize = 1024 * 1024 * 10
 
@@ -47,23 +27,45 @@ func BytesToString(b []byte) string {
 	return unsafe.String(p, len(b))
 }
 
-func Atoi(str []byte) int {
-	num := 0
-	i := 0
-	isNegetive := false
-	if str[i] == '-' {
-		isNegetive = true
-		i++
+func ParseUint(s []byte) uint64 {
+	base := 10
+	// Cutoff is the smallest number such that cutoff*base > maxUint64.
+	// Use compile-time constants for common cases.
+
+	var n uint64
+	for _, c := range []byte(s) {
+		var d byte
+		switch {
+		case '0' <= c && c <= '9':
+			d = c - '0'
+		}
+
+		n *= uint64(base)
+
+		n1 := n + uint64(d)
+		n = n1
 	}
 
-	for str[i] >= '0' && str[i] <= '9' && i < len(str) {
-		num = num*10 + int(str[i]-byte('0'))
-		i++
+	return n
+}
+
+func Atoi(s []byte) int64 {
+	neg := false
+	if s[0] == '+' {
+		s = s[1:]
+	} else if s[0] == '-' {
+		neg = true
+		s = s[1:]
 	}
-	if isNegetive {
-		num = -1 * num
+
+	// Convert unsigned and check range.
+	un := ParseUint(s)
+
+	n := int64(un)
+	if neg {
+		n = -n
 	}
-	return num
+	return n
 }
 
 func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan struct{}) {
@@ -134,10 +136,11 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 				}
 				cursor++
 			}
-			number, err := strconv.ParseInt(BytesToString(number_buf[:count]), 10, 32)
-			if err != nil {
-				log.Panicln(err)
-			}
+			number := Atoi(number_buf[:count])
+			// number, err := strconv.ParseInt(BytesToString(number_buf[:count]), 10, 32)
+			// if err != nil {
+			// 	log.Panicln(err)
+			// }
 
 			if data, ok := stations[word]; ok {
 				if data.Max < number {
