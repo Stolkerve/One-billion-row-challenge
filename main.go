@@ -15,39 +15,55 @@ import (
 )
 
 /*
-float stof(const char* s){
-  float rez = 0, fact = 1;
-  if (*s == '-'){
-    s++;
-    fact = -1;
-  };
-  for (int point_seen = 0; *s; s++){
-    if (*s == '.'){
-      point_seen = 1;
-      continue;
-    };
-    int d = *s - '0';
-    if (d >= 0 && d <= 9){
-      if (point_seen) fact /= 10.0f;
-      rez = rez * 10.0f + (float)d;
-    };
-  };
-  return rez * fact;
-};
+https://stackoverflow.com/questions/7021725/how-to-convert-a-string-to-integer-in-c
+int atoi(const char* str){
+    int num = 0;
+    int i = 0;
+    bool isNegetive = false;
+    if(str[i] == '-'){
+        isNegetive = true;
+        i++;
+    }
+    while (str[i] && (str[i] >= '0' && str[i] <= '9')){
+        num = num * 10 + (str[i] - '0');
+        i++;
+    }
+    if(isNegetive) num = -1 * num;
+    return num;
+}
 */
 
 const FileBufferSize = 1024 * 1024 * 10
 
 type WeatherData struct {
-	Min   float32
-	Mean  float32
-	Max   float32
+	Min   int64
+	Sum   int64
+	Max   int64
 	Count uint64
 }
 
 func BytesToString(b []byte) string {
 	p := unsafe.SliceData(b)
 	return unsafe.String(p, len(b))
+}
+
+func Atoi(str []byte) int {
+	num := 0
+	i := 0
+	isNegetive := false
+	if str[i] == '-' {
+		isNegetive = true
+		i++
+	}
+
+	for str[i] >= '0' && str[i] <= '9' && i < len(str) {
+		num = num*10 + int(str[i]-byte('0'))
+		i++
+	}
+	if isNegetive {
+		num = -1 * num
+	}
+	return num
 }
 
 func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan struct{}) {
@@ -67,7 +83,7 @@ func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan 
 		// fmt.Printf("Total bytes read: %d, Bytes readed: %d\n", n+offset, n)
 		if err != nil {
 			if err != io.EOF {
-				log.Panic(err.Error())
+				panic(err.Error())
 			}
 		}
 
@@ -94,6 +110,7 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 	startWord := 0
 	startNumber := 0
 	word := ""
+	number_buf := make([]byte, 6)
 	for i := 0; i < len(fileChunk); i++ {
 		b := fileChunk[i]
 		if b == ';' {
@@ -102,30 +119,42 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 		}
 		if b == '\n' {
 			startWord = i + 1
-			number_str := BytesToString(fileChunk[startNumber:i])
-			number64, err := strconv.ParseFloat(number_str, 32)
-			number32 := float32(number64)
+			number_str := fileChunk[startNumber:i]
+			cursor := 0
+			count := 0
+			if number_str[cursor] == '-' {
+				number_buf[0] = '-'
+				cursor += 1
+				count += 1
+			}
+			for cursor < len(number_str) {
+				if number_str[cursor] != '.' {
+					number_buf[count] = number_str[cursor]
+					count += 1
+				}
+				cursor++
+			}
+			number, err := strconv.ParseInt(BytesToString(number_buf[:count]), 10, 32)
 			if err != nil {
-				fmt.Println(number_str, i, startNumber)
-				log.Panic(err.Error())
+				log.Panicln(err)
 			}
 
 			if data, ok := stations[word]; ok {
-				if data.Max < number32 {
-					data.Max = number32
+				if data.Max < number {
+					data.Max = number
 				}
-				if data.Min > number32 {
-					data.Min = number32
+				if data.Min > number {
+					data.Min = number
 				}
 				data.Count += 1
-				data.Mean += number32 / float32(data.Count)
+				data.Sum += number
 				stations[word] = data
 				continue
 			}
 			stations[word] = WeatherData{
-				Min:   number32,
-				Mean:  number32,
-				Max:   number32,
+				Min:   number,
+				Sum:   number,
+				Max:   number,
 				Count: 1,
 			}
 		}
@@ -170,10 +199,10 @@ L:
 	for _, k := range keys {
 		v := stations[k]
 		if stationsNum == i {
-			outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Mean, v.Max))
+			outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, float32(v.Min)/10.0, (float32(v.Sum)/10)/float32(v.Count), float32(v.Max)/10))
 			continue
 		}
-		outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f,", k, v.Min, v.Mean, v.Max))
+		outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f,", k, float32(v.Min)/10.0, (float32(v.Sum)/10)/float32(v.Count), float32(v.Max)/10))
 		i += 1
 	}
 	outBuf.WriteString("}")
@@ -186,12 +215,12 @@ func main() {
 			fmt.Println("Iniciando debug...")
 			f, err := os.Create("profile.prof")
 			if err != nil {
-				panic(err)
+				log.Panic(err)
 			}
 			defer f.Close()
 
 			if err := pprof.StartCPUProfile(f); err != nil {
-				panic(err)
+				log.Panic(err)
 			}
 			defer pprof.StopCPUProfile()
 		}
