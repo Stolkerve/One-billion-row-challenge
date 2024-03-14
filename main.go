@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -33,6 +34,8 @@ float stof(const char* s){
 };
 */
 
+const FileBufferSize = 1024 * 1024 * 10
+
 type WeatherData struct {
 	Min   float32
 	Mean  float32
@@ -40,31 +43,20 @@ type WeatherData struct {
 	Count uint64
 }
 
-const FileBufferSize = 1024 * 1024 * 10
-
-func Calculate() {
-	file, err := os.Open("measurements.txt")
-	if err != nil {
-		log.Panic(err.Error())
-	}
-	defer file.Close()
+func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan struct{}) {
 	stat, err := file.Stat()
 	if err != nil {
 		log.Panic(err.Error())
 	}
-
 	fileSize := stat.Size()
 	offset := 0
-	stations := make(map[string]WeatherData)
-	file_bytes := make([]byte, FileBufferSize)
+	fileChunk := make([]byte, FileBufferSize)
 
 	xd := math.Round(float64(fileSize) / float64(FileBufferSize))
+
 	for x := 0; x < int(xd); x++ {
-		startWord := 0
-		startNumber := 0
 		lastEndLinePos := 0
-		word := ""
-		n, err := file.ReadAt(file_bytes, int64(offset))
+		n, err := file.ReadAt(fileChunk, int64(offset))
 		// fmt.Printf("Total bytes read: %d, Bytes readed: %d\n", n+offset, n)
 		if err != nil {
 			if err != io.EOF {
@@ -74,7 +66,7 @@ func Calculate() {
 
 		e := n - 1
 		for {
-			b := file_bytes[e]
+			b := fileChunk[e]
 			if b == '\n' {
 				lastEndLinePos = e + 1
 				break
@@ -82,43 +74,78 @@ func Calculate() {
 			e--
 		}
 
-		for i := 0; i < lastEndLinePos; i++ {
-			b := file_bytes[i]
-			if b == ';' {
-				word = string(file_bytes[startWord:i])
-				startNumber = i + 1
-			}
-			if b == '\n' {
-				startWord = i + 1
-				number_str := string(file_bytes[startNumber:i])
-				number64, err := strconv.ParseFloat(number_str, 32)
-				number32 := float32(number64)
-				if err != nil {
-					fmt.Println(number_str, i, startNumber)
-					log.Panic(err.Error())
-				}
+		b := make([]byte, lastEndLinePos)
+		copy(b, fileChunk)
+		fileChuncksChannel <- b
 
-				if data, ok := stations[word]; ok {
-					if data.Max < number32 {
-						data.Max = number32
-					}
-					if data.Min > number32 {
-						data.Min = number32
-					}
-					data.Count += 1
-					data.Mean += number32 / float32(data.Count)
-					stations[word] = data
-					continue
+		offset += lastEndLinePos
+	}
+	done <- struct{}{}
+}
+
+func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
+	startWord := 0
+	startNumber := 0
+	word := ""
+	for i := 0; i < len(fileChunk); i++ {
+		b := fileChunk[i]
+		if b == ';' {
+			word = string(fileChunk[startWord:i])
+			startNumber = i + 1
+		}
+		if b == '\n' {
+			startWord = i + 1
+			number_str := string(fileChunk[startNumber:i])
+			number64, err := strconv.ParseFloat(number_str, 32)
+			number32 := float32(number64)
+			if err != nil {
+				fmt.Println(number_str, i, startNumber)
+				log.Panic(err.Error())
+			}
+
+			if data, ok := stations[word]; ok {
+				if data.Max < number32 {
+					data.Max = number32
 				}
-				stations[word] = WeatherData{
-					Min:   number32,
-					Mean:  number32,
-					Max:   number32,
-					Count: 1,
+				if data.Min > number32 {
+					data.Min = number32
 				}
+				data.Count += 1
+				data.Mean += number32 / float32(data.Count)
+				stations[word] = data
+				continue
+			}
+			stations[word] = WeatherData{
+				Min:   number32,
+				Mean:  number32,
+				Max:   number32,
+				Count: 1,
 			}
 		}
-		offset += lastEndLinePos
+	}
+}
+
+func Calculate() {
+	file, err := os.Open("measurements.txt")
+	if err != nil {
+		log.Panic(err.Error())
+	}
+	defer file.Close()
+
+	stations := make(map[string]WeatherData)
+	fileChuncksChannel := make(chan []byte, 10)
+	fileChuncksDoneChannel := make(chan struct{})
+
+	go ReadFileByChuncks(file, fileChuncksChannel, fileChuncksDoneChannel)
+
+L:
+	for {
+		select {
+		case chunk := <-fileChuncksChannel:
+			ParseFile(stations, chunk)
+		case <-fileChuncksDoneChannel:
+			break L
+		}
 	}
 
 	stationsNum := len(stations) - 1
@@ -126,8 +153,15 @@ func Calculate() {
 	var outBuf bytes.Buffer
 	// outBuf.Grow(2 + (4 * 3 * stations_num) + (6 * stations_num))
 
+	keys := make([]string, 0, len(stations))
+	for k := range stations {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	outBuf.WriteString("{")
-	for k, v := range stations {
+	for _, k := range keys {
+		v := stations[k]
 		if stationsNum == i {
 			outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, v.Min, v.Mean, v.Max))
 			continue
