@@ -9,8 +9,11 @@ import (
 	"os"
 	"runtime/pprof"
 	"sort"
+	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/alphadose/haxmap"
 )
 
 const FileBufferSize = 1024 * 1024 * 10
@@ -108,7 +111,7 @@ func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan 
 	done <- struct{}{}
 }
 
-func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
+func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
 	startWord := 0
 	startNumber := 0
 	word := ""
@@ -142,7 +145,12 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 			// 	log.Panicln(err)
 			// }
 
-			if data, ok := stations[word]; ok {
+			if data, ok := stations.GetOrSet(word, WeatherData{
+				Min:   number,
+				Sum:   number,
+				Max:   number,
+				Count: 1,
+			}); ok {
 				if data.Max < number {
 					data.Max = number
 				}
@@ -151,14 +159,8 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 				}
 				data.Count += 1
 				data.Sum += number
-				stations[word] = data
+				stations.Set(word, data)
 				continue
-			}
-			stations[word] = WeatherData{
-				Min:   number,
-				Sum:   number,
-				Max:   number,
-				Count: 1,
 			}
 		}
 	}
@@ -171,36 +173,52 @@ func Calculate() {
 	}
 	defer file.Close()
 
-	stations := make(map[string]WeatherData)
+	// stations := make(map[string]WeatherData)
+	stations := haxmap.New[string, WeatherData](1 << 10)
 	fileChuncksChannel := make(chan []byte, 10)
 	fileChuncksDoneChannel := make(chan struct{})
 
 	go ReadFileByChuncks(file, fileChuncksChannel, fileChuncksDoneChannel)
 
+	const numWorkers = 40
+	jobs := make(chan []byte, numWorkers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < numWorkers; i++ {
+		go (func() {
+			for {
+				ParseFile(stations, <-jobs)
+				wg.Done()
+			}
+		})()
+	}
 L:
 	for {
 		select {
 		case chunk := <-fileChuncksChannel:
-			ParseFile(stations, chunk)
+			jobs <- chunk
+			wg.Add(1)
 		case <-fileChuncksDoneChannel:
 			break L
 		}
 	}
+	wg.Wait()
 
-	stationsNum := len(stations) - 1
 	i := 0
 	var outBuf bytes.Buffer
-	// outBuf.Grow(2 + (4 * 3 * stations_num) + (6 * stations_num))
+	outBuf.Grow(1 << 10)
 
-	keys := make([]string, 0, len(stations))
-	for k := range stations {
+	keys := make([]string, 0, stations.Len())
+	stations.ForEach(func(k string, _ WeatherData) bool {
 		keys = append(keys, k)
-	}
+		return true
+	})
+	stationsNum := len(keys) - 1
 	sort.Strings(keys)
 
 	outBuf.WriteString("{")
 	for _, k := range keys {
-		v := stations[k]
+		v, _ := stations.Get(k)
 		if stationsNum == i {
 			outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, float32(v.Min)/10.0, (float32(v.Sum)/10)/float32(v.Count), float32(v.Max)/10))
 			continue
