@@ -1,0 +1,5 @@
+# 1BRC
+/measurements*.txt
+/*.out
+out_expected.txt
+/*-timing.json
