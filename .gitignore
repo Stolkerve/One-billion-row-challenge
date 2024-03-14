@@ -3,3 +3,4 @@
 /*.out
 out_expected.txt
 /*-timing.json
+*.prof

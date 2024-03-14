@@ -7,9 +7,11 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"time"
+	"unsafe"
 )
 
 /*
@@ -41,6 +43,11 @@ type WeatherData struct {
 	Mean  float32
 	Max   float32
 	Count uint64
+}
+
+func BytesToString(b []byte) string {
+	p := unsafe.SliceData(b)
+	return unsafe.String(p, len(b))
 }
 
 func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan struct{}) {
@@ -90,12 +97,12 @@ func ParseFile(stations map[string]WeatherData, fileChunk []byte) {
 	for i := 0; i < len(fileChunk); i++ {
 		b := fileChunk[i]
 		if b == ';' {
-			word = string(fileChunk[startWord:i])
+			word = BytesToString(fileChunk[startWord:i])
 			startNumber = i + 1
 		}
 		if b == '\n' {
 			startWord = i + 1
-			number_str := string(fileChunk[startNumber:i])
+			number_str := BytesToString(fileChunk[startNumber:i])
 			number64, err := strconv.ParseFloat(number_str, 32)
 			number32 := float32(number64)
 			if err != nil {
@@ -174,6 +181,21 @@ L:
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		if os.Args[1] == "--debug" {
+			fmt.Println("Iniciando debug...")
+			f, err := os.Create("profile.prof")
+			if err != nil {
+				panic(err)
+			}
+			defer f.Close()
+
+			if err := pprof.StartCPUProfile(f); err != nil {
+				panic(err)
+			}
+			defer pprof.StopCPUProfile()
+		}
+	}
 	start := time.Now()
 	Calculate()
 	fmt.Printf("Took: %v", time.Since(start))
