@@ -121,8 +121,6 @@ func Calculate() {
 		offset += lastEndLinePos
 	}
 
-	fmt.Println(fileSize)
-
 	stationsNum := len(stations) - 1
 	i := 0
 	var outBuf bytes.Buffer
