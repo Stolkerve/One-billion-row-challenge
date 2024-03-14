@@ -1,0 +1,1 @@
+Primera iteracion: 20,19 minutos
