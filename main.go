@@ -31,7 +31,6 @@ func BytesToString(b []byte) string {
 }
 
 func ParseUint(s []byte) uint64 {
-	base := 10
 	// Cutoff is the smallest number such that cutoff*base > maxUint64.
 	// Use compile-time constants for common cases.
 
@@ -43,7 +42,7 @@ func ParseUint(s []byte) uint64 {
 			d = c - '0'
 		}
 
-		n *= uint64(base)
+		n *= uint64(10)
 
 		n1 := n + uint64(d)
 		n = n1
@@ -113,55 +112,62 @@ func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan 
 
 func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
 	startWord := 0
-	startNumber := 0
 	word := ""
-	number_buf := make([]byte, 6)
+	number := int64(0)
 	for i := 0; i < len(fileChunk); i++ {
-		b := fileChunk[i]
-		if b == ';' {
-			word = BytesToString(fileChunk[startWord:i])
-			startNumber = i + 1
+		for {
+			if fileChunk[i] == ';' {
+				word = BytesToString(fileChunk[startWord:i])
+				i++
+				break
+			}
+			i++
 		}
-		if b == '\n' {
-			startWord = i + 1
-			number_str := fileChunk[startNumber:i]
-			cursor := 0
-			count := 0
-			if number_str[cursor] == '-' {
-				number_buf[0] = '-'
-				cursor += 1
-				count += 1
+		for {
+			if fileChunk[i] == '\n' {
+				startWord = i + 1
+				break
 			}
-			for cursor < len(number_str) {
-				if number_str[cursor] != '.' {
-					number_buf[count] = number_str[cursor]
-					count += 1
+			var n uint64
+			neg := false
+			if fileChunk[i] == '-' {
+				neg = true
+			}
+			if fileChunk[i] != '.' {
+				c := fileChunk[i]
+				var d byte
+				switch {
+				case '0' <= c && c <= '9':
+					d = c - '0'
 				}
-				cursor++
-			}
-			number := Atoi(number_buf[:count])
-			// number, err := strconv.ParseInt(BytesToString(number_buf[:count]), 10, 32)
-			// if err != nil {
-			// 	log.Panicln(err)
-			// }
 
-			if data, ok := stations.GetOrSet(word, WeatherData{
-				Min:   number,
-				Sum:   number,
-				Max:   number,
-				Count: 1,
-			}); ok {
-				if data.Max < number {
-					data.Max = number
-				}
-				if data.Min > number {
-					data.Min = number
-				}
-				data.Count += 1
-				data.Sum += number
-				stations.Set(word, data)
-				continue
+				n *= uint64(10)
+				n1 := n + uint64(d)
+				n = n1
 			}
+
+			number = int64(n)
+			if neg {
+				number = -number
+			}
+			i++
+		}
+		if data, ok := stations.GetOrSet(word, WeatherData{
+			Min:   number,
+			Sum:   number,
+			Max:   number,
+			Count: 1,
+		}); ok {
+			if data.Max < number {
+				data.Max = number
+			}
+			if data.Min > number {
+				data.Min = number
+			}
+			data.Count += 1
+			data.Sum += number
+			stations.Set(word, data)
+			continue
 		}
 	}
 }
