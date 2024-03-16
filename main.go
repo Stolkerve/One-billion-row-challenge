@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"sort"
 	"sync"
@@ -28,46 +29,6 @@ type WeatherData struct {
 func BytesToString(b []byte) string {
 	p := unsafe.SliceData(b)
 	return unsafe.String(p, len(b))
-}
-
-func ParseUint(s []byte) uint64 {
-	// Cutoff is the smallest number such that cutoff*base > maxUint64.
-	// Use compile-time constants for common cases.
-
-	var n uint64
-	for _, c := range []byte(s) {
-		var d byte
-		switch {
-		case '0' <= c && c <= '9':
-			d = c - '0'
-		}
-
-		n *= uint64(10)
-
-		n1 := n + uint64(d)
-		n = n1
-	}
-
-	return n
-}
-
-func Atoi(s []byte) int64 {
-	neg := false
-	if s[0] == '+' {
-		s = s[1:]
-	} else if s[0] == '-' {
-		neg = true
-		s = s[1:]
-	}
-
-	// Convert unsigned and check range.
-	un := ParseUint(s)
-
-	n := int64(un)
-	if neg {
-		n = -n
-	}
-	return n
 }
 
 func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan struct{}) {
@@ -123,13 +84,13 @@ func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
 			}
 			i++
 		}
+		var n uint64
+		neg := false
 		for {
 			if fileChunk[i] == '\n' {
 				startWord = i + 1
 				break
 			}
-			var n uint64
-			neg := false
 			if fileChunk[i] == '-' {
 				neg = true
 			}
@@ -145,12 +106,11 @@ func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
 				n1 := n + uint64(d)
 				n = n1
 			}
-
-			number = int64(n)
-			if neg {
-				number = -number
-			}
 			i++
+		}
+		number = int64(n)
+		if neg {
+			number = -number
 		}
 		if data, ok := stations.GetOrSet(word, WeatherData{
 			Min:   number,
@@ -186,7 +146,7 @@ func Calculate() {
 
 	go ReadFileByChuncks(file, fileChuncksChannel, fileChuncksDoneChannel)
 
-	const numWorkers = 40
+	var numWorkers = runtime.NumCPU()
 	jobs := make(chan []byte, numWorkers)
 	var wg sync.WaitGroup
 
