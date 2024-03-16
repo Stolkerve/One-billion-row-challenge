@@ -15,3 +15,4 @@
 - Quinta iteracion: 1,05 minutos
 - Sexta iteracion: 30.2 segundos
 - Septima iteracion: 26.29 segundos
+- Octava iteracion: 13.73 segundos

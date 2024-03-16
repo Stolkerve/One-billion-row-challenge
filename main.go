@@ -11,19 +11,36 @@ import (
 	"runtime/pprof"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
-
-	"github.com/alphadose/haxmap"
 )
 
 const FileBufferSize = 1024 * 1024 * 10
+const NumBuckets = 1 << 17 // number of hash buckets (power of 2)
+const (
+	// FNV-1 64-bit constants from hash/fnv.
+	Offset64 = 14695981039346656037
+	Prime64  = 1099511628211
+)
 
 type WeatherData struct {
 	Min   int64
 	Sum   int64
 	Max   int64
 	Count uint64
+}
+
+type Weather struct {
+	WeatherData
+	Name string
+	Set  bool
+}
+
+// idea sacada de https://github.com/benhoyt/go-1brc/blob/master/r7.go
+type HashMap struct {
+	Buckets []Weather
+	Size    atomic.Int64
 }
 
 func BytesToString(b []byte) string {
@@ -71,17 +88,20 @@ func ReadFileByChuncks(file *os.File, fileChuncksChannel chan []byte, done chan 
 	done <- struct{}{}
 }
 
-func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
+func ParseFile(stations *HashMap, fileChunk []byte) {
 	startWord := 0
 	word := ""
 	number := int64(0)
 	for i := 0; i < len(fileChunk); i++ {
+		hash := uint64(Offset64)
 		for {
 			if fileChunk[i] == ';' {
 				word = BytesToString(fileChunk[startWord:i])
 				i++
 				break
 			}
+			hash ^= uint64(fileChunk[i]) // FNV-1a is XOR then *
+			hash *= Prime64
 			i++
 		}
 		var n uint64
@@ -112,22 +132,33 @@ func ParseFile(stations *haxmap.Map[string, WeatherData], fileChunk []byte) {
 		if neg {
 			number = -number
 		}
-		if data, ok := stations.GetOrSet(word, WeatherData{
-			Min:   number,
-			Sum:   number,
-			Max:   number,
-			Count: 1,
-		}); ok {
-			if data.Max < number {
-				data.Max = number
+		hashIndex := int(hash & uint64(NumBuckets-1))
+		for {
+			if !stations.Buckets[hashIndex].Set {
+				stations.Buckets[hashIndex].Set = true
+				stations.Buckets[hashIndex].Name = word
+				stations.Buckets[hashIndex].WeatherData = WeatherData{
+					Min:   number,
+					Sum:   number,
+					Max:   number,
+					Count: 1,
+				}
+				stations.Size.Add(1)
+				break
 			}
-			if data.Min > number {
-				data.Min = number
+			if stations.Buckets[hashIndex].Name == word {
+				data := &stations.Buckets[hashIndex]
+				data.Min = min(data.Min, number)
+				data.Max = max(data.Max, number)
+				data.Count += 1
+				data.Sum += number
+				break
 			}
-			data.Count += 1
-			data.Sum += number
-			stations.Set(word, data)
-			continue
+
+			hashIndex++
+			if hashIndex >= NumBuckets {
+				hashIndex = 0
+			}
 		}
 	}
 }
@@ -139,8 +170,10 @@ func Calculate() {
 	}
 	defer file.Close()
 
-	// stations := make(map[string]WeatherData)
-	stations := haxmap.New[string, WeatherData](1 << 10)
+	weatherStations := HashMap{
+		Buckets: make([]Weather, NumBuckets),
+	}
+
 	fileChuncksChannel := make(chan []byte, 10)
 	fileChuncksDoneChannel := make(chan struct{})
 
@@ -153,7 +186,7 @@ func Calculate() {
 	for i := 0; i < numWorkers; i++ {
 		go (func() {
 			for {
-				ParseFile(stations, <-jobs)
+				ParseFile(&weatherStations, <-jobs)
 				wg.Done()
 			}
 		})()
@@ -174,22 +207,25 @@ L:
 	var outBuf bytes.Buffer
 	outBuf.Grow(1 << 10)
 
-	keys := make([]string, 0, stations.Len())
-	stations.ForEach(func(k string, _ WeatherData) bool {
-		keys = append(keys, k)
-		return true
-	})
-	stationsNum := len(keys) - 1
-	sort.Strings(keys)
-
-	outBuf.WriteString("{")
-	for _, k := range keys {
-		v, _ := stations.Get(k)
-		if stationsNum == i {
-			outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", k, float32(v.Min)/10.0, (float32(v.Sum)/10)/float32(v.Count), float32(v.Max)/10))
+	weatherRecords := make([]Weather, 0, weatherStations.Size.Load())
+	for _, record := range weatherStations.Buckets {
+		if !record.Set {
 			continue
 		}
-		outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f,", k, float32(v.Min)/10.0, (float32(v.Sum)/10)/float32(v.Count), float32(v.Max)/10))
+		weatherRecords = append(weatherRecords, record)
+	}
+	stationsNum := len(weatherRecords) - 1
+	sort.Slice(weatherRecords, func(i, j int) bool {
+		// fmt.Println()
+		return weatherRecords[i].Name < weatherRecords[j].Name
+	})
+
+	outBuf.WriteString("{")
+	for _, record := range weatherRecords {
+		outBuf.WriteString(fmt.Sprintf("%s=%.1f/%.1f/%.1f", record.Name, float64(record.Min)/10, float64(record.Sum)/float64(record.Count)/10, float64(record.Max)/10))
+		if stationsNum != i {
+			outBuf.WriteString(",")
+		}
 		i += 1
 	}
 	outBuf.WriteString("}")
